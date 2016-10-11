@@ -26,9 +26,9 @@ import android.preference.PreferenceActivity;
 import android.preference.PreferenceManager;
 import android.support.design.widget.Snackbar;
 import android.text.TextUtils;
-import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
+
 import com.example.android.sunshine.app.data.WeatherContract;
 import com.example.android.sunshine.app.sync.SunshineSyncAdapter;
 import com.google.android.gms.location.places.Place;
@@ -64,7 +64,7 @@ public class SettingsActivity extends PreferenceActivity
         // If we are using a PlacePicker location, we need to show attributions.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
             mAttribution = new ImageView(this);
-            mAttribution.setImageResource(R.drawable.powered_by_google_light);
+            mAttribution.setImageResource(R.drawable.common_google_signin_btn_icon_light);
 
             if (!Utility.isLocationLatLonAvailable(this)) {
                 mAttribution.setVisibility(View.GONE);
