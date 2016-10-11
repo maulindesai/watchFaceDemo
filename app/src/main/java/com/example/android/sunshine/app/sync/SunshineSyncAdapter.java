@@ -36,12 +36,21 @@ import com.example.android.sunshine.app.R;
 import com.example.android.sunshine.app.Utility;
 import com.example.android.sunshine.app.data.WeatherContract;
 import com.example.android.sunshine.app.muzei.WeatherMuzeiSource;
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.wearable.Asset;
+import com.google.android.gms.wearable.DataApi;
+import com.google.android.gms.wearable.PutDataMapRequest;
+import com.google.android.gms.wearable.PutDataRequest;
+import com.google.android.gms.wearable.Wearable;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -53,6 +62,10 @@ import java.util.Vector;
 import java.util.concurrent.ExecutionException;
 
 public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
+    private static final String TEMP_ICON_KEY = "com.example.android.sunshine.key.icon";
+    private static final String TEMP_MIN_KEY = "com.example.android.sunshine.key.temp.min";
+    private static final String TEMP_MAX_KEY = "com.example.android.sunshine.key.temp.max";
+
     public final String LOG_TAG = SunshineSyncAdapter.class.getSimpleName();
     public static final String ACTION_DATA_UPDATED =
             "com.example.android.sunshine.app.ACTION_DATA_UPDATED";
@@ -76,6 +89,10 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
     private static final int INDEX_MAX_TEMP = 1;
     private static final int INDEX_MIN_TEMP = 2;
     private static final int INDEX_SHORT_DESC = 3;
+    private GoogleApiClient mGoogleApiClient;
+    private Bitmap weatherIcon;
+    private double minTemprature;
+    private double maxTemprature;
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({LOCATION_STATUS_OK, LOCATION_STATUS_SERVER_DOWN, LOCATION_STATUS_SERVER_INVALID,  LOCATION_STATUS_UNKNOWN, LOCATION_STATUS_INVALID})
@@ -366,6 +383,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
                         WeatherContract.WeatherEntry.COLUMN_DATE + " <= ?",
                         new String[] {Long.toString(dayTime.setJulianDay(julianStartDay-1))});
 
+                notifyWear();
                 updateWidgets();
                 updateMuzei();
                 notifyWeather();
@@ -658,4 +676,90 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
         spe.putInt(c.getString(R.string.pref_location_status_key), locationStatus);
         spe.commit();
     }
+
+    private void notifyWear() {
+        String locationQuery = Utility.getPreferredLocation(getContext());
+
+        Uri weatherUri = WeatherContract.WeatherEntry.buildWeatherLocationWithDate(locationQuery,
+                System.currentTimeMillis());
+        Cursor cursor = getContext().getContentResolver().query(weatherUri, NOTIFY_WEATHER_PROJECTION, null,
+                null, WeatherContract.WeatherEntry.COLUMN_DATE + " ASC");
+
+        if (cursor.moveToFirst()) {
+            int weatherId = cursor.getInt(INDEX_WEATHER_ID);
+            minTemprature = cursor.getDouble(INDEX_MIN_TEMP);
+            maxTemprature = cursor.getDouble(INDEX_MAX_TEMP);
+
+            Resources resources = getContext().getResources();
+            int artResourceId = Utility.getArtResourceForWeatherCondition(weatherId);
+            String artUrl = Utility.getArtUrlForWeatherCondition(getContext(), weatherId);
+
+            int largeIconSize = resources.getDimensionPixelSize(R.dimen.notification_large_icon_default);
+            try {
+                weatherIcon = Glide.with(getContext())
+                        .load(artUrl)
+                        .asBitmap()
+                        .error(artResourceId)
+                        .fitCenter()
+                        .into(largeIconSize, largeIconSize).get();
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+                weatherIcon = BitmapFactory.decodeResource(resources, artResourceId);
+            }
+        }
+
+        Asset asset = createAssetFromBitmap(weatherIcon);
+
+        final String TAG = "Wear Date Layer";
+        mGoogleApiClient = new GoogleApiClient.Builder(getContext())
+                .addConnectionCallbacks(new GoogleApiClient.ConnectionCallbacks() {
+                    @Override
+                    public void onConnected(Bundle connectionHint) {
+                        Log.d(TAG, "onConnected: " + connectionHint);
+                    }
+
+                    @Override
+                    public void onConnectionSuspended(int cause) {
+                        Log.d(TAG, "onConnectionSuspended: " + cause);
+                    }
+                })
+                .addOnConnectionFailedListener(new GoogleApiClient.OnConnectionFailedListener() {
+                    @Override
+                    public void onConnectionFailed(ConnectionResult result) {
+                        Log.d(TAG, "onConnectionFailed: " + result);
+                    }
+                })
+                // Request access only to the Wearable API
+                .addApi(Wearable.API)
+                .build();
+
+        mGoogleApiClient.connect();
+
+        PutDataMapRequest putDataMapReq = PutDataMapRequest.create("/weather");
+        putDataMapReq.getDataMap().putDouble(TEMP_MIN_KEY, minTemprature);
+        putDataMapReq.getDataMap().putDouble(TEMP_MAX_KEY, maxTemprature);
+        //for test purpose so i will get update record each time :-)
+        //putDataMapReq.getDataMap().putLong("timestamp", Calendar.getInstance().getTimeInMillis());
+        putDataMapReq.getDataMap().putAsset(TEMP_ICON_KEY, asset);
+        PutDataRequest putDataReq = putDataMapReq.asPutDataRequest();
+        Wearable.DataApi.putDataItem(mGoogleApiClient, putDataReq).setResultCallback(
+                new ResultCallback<DataApi.DataItemResult>() {
+                    @Override
+                    public void onResult(DataApi.DataItemResult dataItemResult) {
+                        if (!dataItemResult.getStatus().isSuccess()) {
+                            Log.e(TAG, "buildWatchOnlyNotification(): Failed to set the data, "
+                                    + "status: " + dataItemResult.getStatus().getStatusCode());
+                        }
+                        mGoogleApiClient.disconnect();
+                    }
+                }
+        );
+    }
+
+    private static Asset createAssetFromBitmap(Bitmap bitmap) {
+        final ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream);
+        return Asset.createFromBytes(byteStream.toByteArray());
+    }
+
 }
